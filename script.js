@@ -449,6 +449,11 @@ function renderWorks() {
           </div>
           <div class="compare-line"></div>
         </div>
+        <button type="button" class="compare-zoom" aria-label="Ampliar imagen" title="Ampliar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+          </svg>
+        </button>
       </div>
       <div class="work-admin-btns ${isAdminMode ? '' : 'hidden'} admin-only">
         <label class="admin-img-label" onclick="triggerWorkImg(${work.id}, 'before')">📷 Cambiar ANTES</label>
@@ -456,6 +461,11 @@ function renderWorks() {
         <button class="admin-img-label danger" onclick="deleteWork(${work.id})">🗑 Eliminar</button>
       </div>
     `
+    const zoomBtn = div.querySelector('.compare-zoom')
+    // que el botón no active el arrastre del divisor
+    zoomBtn.addEventListener('mousedown',  (e) => e.stopPropagation())
+    zoomBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true })
+    zoomBtn.addEventListener('click', () => openLightbox(work))
     grid.appendChild(div)
   })
 
@@ -553,35 +563,184 @@ function makeWorkTitlesEditable() {
 // COMPARE SLIDER
 // ANTES a la izquierda · DESPUÉS a la derecha
 // ================================================
+function setupCompare(slider) {
+  const beforeEl = slider.querySelector('.compare-before')
+  const afterEl  = slider.querySelector('.compare-after')
+  const handle   = slider.querySelector('.compare-handle')
+  let dragging   = false
+
+  // El DESPUÉS queda de fondo completo (se ve a la derecha del divisor)
+  afterEl.style.zIndex   = '1'
+  afterEl.style.clipPath = 'none'
+
+  // El ANTES va arriba y se recorta (se ve a la izquierda del divisor)
+  beforeEl.style.zIndex  = '2'
+
+  const getPos = (x) => {
+    const rect = slider.getBoundingClientRect()
+    return Math.min(Math.max(((x - rect.left) / rect.width) * 100, 2), 98)
+  }
+  const apply = (pct) => {
+    beforeEl.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
+    handle.style.left       = `${pct}%`
+  }
+  slider._apply = apply
+
+  apply(50)
+  slider.addEventListener('mousedown',  (e) => { dragging = true; apply(getPos(e.clientX)); e.preventDefault() })
+  window.addEventListener('mousemove',  (e) => { if (dragging) apply(getPos(e.clientX)) })
+  window.addEventListener('mouseup',    ()  => { dragging = false })
+  slider.addEventListener('touchstart', (e) => { dragging = true; apply(getPos(e.touches[0].clientX)) }, { passive: true })
+  window.addEventListener('touchmove',  (e) => { if (dragging) apply(getPos(e.touches[0].clientX)) },   { passive: true })
+  window.addEventListener('touchend',   ()  => { dragging = false })
+}
+
 function initCompareSliders() {
-  document.querySelectorAll('.compare-slider').forEach(slider => {
-    const beforeEl = slider.querySelector('.compare-before')
-    const afterEl  = slider.querySelector('.compare-after')
-    const handle   = slider.querySelector('.compare-handle')
-    let dragging   = false
+  document.querySelectorAll('.work-item .compare-slider').forEach(setupCompare)
+}
 
-    // El DESPUÉS queda de fondo completo (se ve a la derecha del divisor)
-    afterEl.style.zIndex   = '1'
-    afterEl.style.clipPath = 'none'
-
-    // El ANTES va arriba y se recorta (se ve a la izquierda del divisor)
-    beforeEl.style.zIndex  = '2'
-
-    const getPos = (x) => {
-      const rect = slider.getBoundingClientRect()
-      return Math.min(Math.max(((x - rect.left) / rect.width) * 100, 2), 98)
+// ================================================
+// LIGHTBOX — AMPLIAR ANTES / DESPUÉS
+// ================================================
+function injectLightboxStyles() {
+  if (document.getElementById('lightboxStyles')) return
+  const style = document.createElement('style')
+  style.id = 'lightboxStyles'
+  style.textContent = `
+    /* Botón ampliar sobre cada comparador */
+    .compare-zoom {
+      position: absolute;
+      bottom: 10px; right: 10px;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: rgba(15,31,61,0.75);
+      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 20;
+      cursor: zoom-in;
+      border: 1px solid rgba(255,255,255,0.35);
+      transition: background 0.3s ease, transform 0.3s ease;
     }
-    const apply = (pct) => {
-      beforeEl.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
-      handle.style.left       = `${pct}%`
-    }
+    .compare-zoom:hover { background: #c9a84c; color: #0f1f3d; transform: scale(1.08); }
 
-    apply(50)
-    slider.addEventListener('mousedown',  (e) => { dragging = true; apply(getPos(e.clientX)); e.preventDefault() })
-    window.addEventListener('mousemove',  (e) => { if (dragging) apply(getPos(e.clientX)) })
-    window.addEventListener('mouseup',    ()  => { dragging = false })
-    slider.addEventListener('touchstart', (e) => { dragging = true; apply(getPos(e.touches[0].clientX)) }, { passive: true })
-    window.addEventListener('touchmove',  (e) => { if (dragging) apply(getPos(e.touches[0].clientX)) },   { passive: true })
-    window.addEventListener('touchend',   ()  => { dragging = false })
+    /* Lightbox */
+    .lb-overlay {
+      position: fixed; inset: 0;
+      background: rgba(7,15,29,0.94);
+      z-index: 100000;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 14px;
+      padding: 16px;
+      animation: lbFade 0.2s ease;
+    }
+    .lb-overlay.hidden { display: none !important; }
+    @keyframes lbFade { from { opacity: 0; } to { opacity: 1; } }
+
+    .lb-title {
+      color: #fff;
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 1.2rem;
+      text-align: center;
+      padding: 0 48px;
+    }
+    .lb-close {
+      position: absolute;
+      top: 14px; right: 14px;
+      width: 42px; height: 42px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      font-size: 1.2rem;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+    .lb-close:hover { background: #c9a84c; color: #0f1f3d; }
+
+    .lb-slider {
+      position: relative;
+      width: min(96vw, calc(78vh * 4 / 3), 1200px);
+      aspect-ratio: 4 / 3;
+      overflow: hidden;
+      border-radius: 12px;
+      background: #111;
+      cursor: col-resize;
+      user-select: none;
+      touch-action: none;
+    }
+    .lb-slider .compare-before img,
+    .lb-slider .compare-after img { object-fit: contain; }
+
+    .lb-hint {
+      color: rgba(255,255,255,0.55);
+      font-size: 0.8rem;
+      text-align: center;
+    }
+  `
+  document.head.appendChild(style)
+}
+
+function buildLightbox() {
+  let box = document.getElementById('lightbox')
+  if (box) return box
+
+  injectLightboxStyles()
+
+  box = document.createElement('div')
+  box.id = 'lightbox'
+  box.className = 'lb-overlay hidden'
+  box.innerHTML = `
+    <button type="button" class="lb-close" aria-label="Cerrar">✕</button>
+    <div class="lb-title" id="lbTitle"></div>
+    <div class="compare-slider lb-slider" id="lbSlider">
+      <div class="compare-before">
+        <img id="lbBefore" src="" alt="Antes" />
+        <span class="compare-tag before-tag">ANTES</span>
+      </div>
+      <div class="compare-after">
+        <img id="lbAfter" src="" alt="Después" />
+        <span class="compare-tag after-tag">DESPUÉS</span>
+      </div>
+      <div class="compare-handle">
+        <div class="compare-line"></div>
+        <div class="compare-circle">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M8 9l-4 3 4 3M16 9l4 3-4 3"/>
+          </svg>
+        </div>
+        <div class="compare-line"></div>
+      </div>
+    </div>
+    <div class="lb-hint">Deslizá para comparar · Tocá afuera o presioná Esc para cerrar</div>
+  `
+  document.body.appendChild(box)
+
+  // cerrar: botón X, click en el fondo, tecla Escape
+  box.querySelector('.lb-close').addEventListener('click', closeLightbox)
+  box.addEventListener('click', (e) => { if (e.target === box) closeLightbox() })
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeLightbox()
   })
+
+  setupCompare(document.getElementById('lbSlider'))
+  return box
+}
+
+function openLightbox(work) {
+  const box = buildLightbox()
+  document.getElementById('lbTitle').textContent = work.title || ''
+  document.getElementById('lbBefore').src = work.before
+  document.getElementById('lbAfter').src  = work.after
+  box.classList.remove('hidden')
+  document.body.style.overflow = 'hidden'
+  const slider = document.getElementById('lbSlider')
+  if (slider && slider._apply) slider._apply(50)
+}
+
+function closeLightbox() {
+  const box = document.getElementById('lightbox')
+  if (!box || box.classList.contains('hidden')) return
+  box.classList.add('hidden')
+  document.body.style.overflow = ''
 }
