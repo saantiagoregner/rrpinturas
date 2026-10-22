@@ -418,6 +418,7 @@ async function saveWorks(works) {
 function renderWorks() {
   const grid = document.getElementById('worksGrid')
   if (!grid) return
+  injectLightboxStyles() // los estilos del botón de ampliar tienen que estar desde el inicio
   const works = getWorks()
   grid.innerHTML = ''
 
