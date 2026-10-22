@@ -586,6 +586,7 @@ function setupCompare(slider, opts = {}) {
   const apply = (pct) => {
     beforeEl.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
     handle.style.left       = `${pct}%`
+    slider._pct             = pct
   }
   slider._apply = apply
 
@@ -649,6 +650,9 @@ function injectLightboxStyles() {
       align-items: center; justify-content: center;
       gap: 12px;
       padding: 16px;
+      touch-action: none;
+      user-select: none;
+      overscroll-behavior: contain;
       animation: lbFade 0.2s ease;
     }
     .lb-overlay.hidden { display: none !important; }
@@ -801,20 +805,46 @@ function initLightboxZoom(slider) {
     lbToggleZoom(e.clientX, e.clientY)
   })
 
-  // Arrastrar para mover la foto, pellizcar y doble toque
+  // Todo el manejo de dedos / mouse en un solo lugar (pointer events):
+  //   'divider' = mover la línea · 'pan' = mover la foto con zoom · 'pinch' = pellizcar · 'none' = ignorar
   const pointers = new Map()
-  let lastDist = 0, lastMid = null, moved = false
+  let mode = 'none', startPct = 50, lastDist = 0, lastMid = null
+  let moved = false, downOnCircle = false
   let lastTap = { t: 0, x: 0, y: 0 }
 
+  const posFromX = (x) => {
+    const r = slider.getBoundingClientRect()
+    return Math.min(Math.max(((x - r.left) / r.width) * 100, 2), 98)
+  }
+  const pinchState = () => {
+    const [a, b] = [...pointers.values()]
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+  }
+
   slider.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.compare-circle')) return
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    slider.setPointerCapture(e.pointerId)
-    moved = false
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()]
-      lastDist = Math.hypot(a.x - b.x, a.y - b.y)
-      lastMid  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY })
+    // con esto seguimos recibiendo el arrastre aunque el dedo/mouse salga de la foto
+    try { slider.setPointerCapture(e.pointerId) } catch (err) {}
+
+    if (pointers.size === 1) {
+      moved = false
+      downOnCircle = !!e.target.closest('.compare-circle')
+      if (lb.scale <= 1 || downOnCircle) {
+        mode = 'divider'
+        startPct = slider._pct
+        // con mouse la línea salta al clic; con el dedo solo se mueve al arrastrar
+        if (e.pointerType === 'mouse') slider._apply(posFromX(e.clientX))
+      } else {
+        mode = 'pan'
+      }
+    } else if (pointers.size === 2) {
+      // llegó el segundo dedo: es un pellizco, el divisor vuelve a donde estaba
+      if (mode === 'divider') slider._apply(startPct)
+      mode = 'pinch'
+      moved = true
+      const st = pinchState()
+      lastDist = st.dist; lastMid = st.mid
     }
   })
 
@@ -823,39 +853,47 @@ function initLightboxZoom(slider) {
     if (!p) return
     const dx = e.clientX - p.x, dy = e.clientY - p.y
     p.x = e.clientX; p.y = e.clientY
-    if (Math.abs(dx) + Math.abs(dy) > 2) moved = true
+    if (Math.hypot(e.clientX - p.sx, e.clientY - p.sy) > 8) moved = true
 
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()]
-      const dist = Math.hypot(a.x - b.x, a.y - b.y)
-      const mid  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-      if (lastDist) lbZoomAt(mid.x, mid.y, lb.scale * dist / lastDist)
-      if (lastMid) {
-        lb.tx += mid.x - lastMid.x
-        lb.ty += mid.y - lastMid.y
-        lbClamp(); lbApplyTransform()
-      }
-      lastDist = dist; lastMid = mid; moved = true
-    } else if (pointers.size === 1 && lb.scale > 1) {
+    if (mode === 'divider') {
+      if (moved || e.pointerType === 'mouse') slider._apply(posFromX(e.clientX))
+    } else if (mode === 'pan') {
       lb.tx += dx; lb.ty += dy
       lbClamp(); lbApplyTransform()
+    } else if (mode === 'pinch' && pointers.size === 2) {
+      const st = pinchState()
+      if (lastDist && lastMid) {
+        // zoom alrededor del punto medio anterior y después seguimos el movimiento de los dedos
+        lbZoomAt(lastMid.x, lastMid.y, lb.scale * st.dist / lastDist)
+        lb.tx += st.mid.x - lastMid.x
+        lb.ty += st.mid.y - lastMid.y
+        lbClamp(); lbApplyTransform()
+      }
+      lastDist = st.dist; lastMid = st.mid
     }
   })
 
   const endPointer = (e) => {
     if (!pointers.has(e.pointerId)) return
     pointers.delete(e.pointerId)
-    lastDist = 0; lastMid = null
     if (e.pointerType === 'touch') lastTouchAt = Date.now()
-    // doble toque en pantallas táctiles
-    if (e.type === 'pointerup' && e.pointerType === 'touch' && !moved && pointers.size === 0) {
-      const now = Date.now()
-      if (now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
-        lbToggleZoom(e.clientX, e.clientY)
-        lastTap.t = 0
-      } else {
-        lastTap = { t: now, x: e.clientX, y: e.clientY }
+    lastDist = 0; lastMid = null
+
+    if (pointers.size === 0) {
+      // doble toque en pantallas táctiles
+      if (e.type === 'pointerup' && e.pointerType === 'touch' && mode !== 'pinch' && !moved && !downOnCircle) {
+        const now = Date.now()
+        if (now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+          lbToggleZoom(e.clientX, e.clientY)
+          lastTap.t = 0
+        } else {
+          lastTap = { t: now, x: e.clientX, y: e.clientY }
+        }
       }
+      mode = 'none'
+    } else if (pointers.size === 1) {
+      // quedó un dedo después de pellizcar: si hay zoom sigue moviendo la foto
+      mode = lb.scale > 1 ? 'pan' : 'none'
     }
   }
   slider.addEventListener('pointerup',     endPointer)
@@ -906,22 +944,19 @@ function buildLightbox() {
 
   // cerrar: botón X, click en el fondo, tecla Escape
   box.querySelector('.lb-close').addEventListener('click', closeLightbox)
-  box.addEventListener('click', (e) => { if (e.target === box) closeLightbox() })
+  // Solo se cierra si el toque empezó en el fondo. Si arrastraste el divisor
+  // y soltaste afuera de la foto, no debe cerrarse.
+  let downOnOverlay = false
+  box.addEventListener('pointerdown', (e) => { downOnOverlay = (e.target === box) })
+  box.addEventListener('click', (e) => { if (e.target === box && downOnOverlay) closeLightbox() })
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeLightbox()
   })
 
   const slider = document.getElementById('lbSlider')
 
-  // El divisor se mueve arrastrando en cualquier lado si no hay zoom;
-  // con zoom, arrastrar mueve la foto y el divisor se agarra desde el círculo.
-  setupCompare(slider, {
-    canStart: (e) => {
-      if (e.touches && e.touches.length > 1) return false
-      if (lb.scale <= 1) return true
-      return !!e.target.closest('.compare-circle')
-    }
-  })
+  // setupCompare solo arma las capas y el divisor; el arrastre lo maneja initLightboxZoom
+  setupCompare(slider, { canStart: () => false })
   initLightboxZoom(slider)
 
   document.getElementById('lbZoomIn').addEventListener('click',    () => lbZoomCenter(1.4))
