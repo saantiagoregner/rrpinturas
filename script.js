@@ -563,11 +563,13 @@ function makeWorkTitlesEditable() {
 // ================================================
 // COMPARE SLIDER
 // ANTES a la izquierda · DESPUÉS a la derecha
+// opts.canStart(e) permite decidir cuándo un toque/clic mueve el divisor
 // ================================================
-function setupCompare(slider) {
+function setupCompare(slider, opts = {}) {
   const beforeEl = slider.querySelector('.compare-before')
   const afterEl  = slider.querySelector('.compare-after')
   const handle   = slider.querySelector('.compare-handle')
+  const canStart = opts.canStart || (() => true)
   let dragging   = false
 
   // El DESPUÉS queda de fondo completo (se ve a la derecha del divisor)
@@ -588,26 +590,40 @@ function setupCompare(slider) {
   slider._apply = apply
 
   apply(50)
-  slider.addEventListener('mousedown',  (e) => { dragging = true; apply(getPos(e.clientX)); e.preventDefault() })
-  window.addEventListener('mousemove',  (e) => { if (dragging) apply(getPos(e.clientX)) })
-  window.addEventListener('mouseup',    ()  => { dragging = false })
-  slider.addEventListener('touchstart', (e) => { dragging = true; apply(getPos(e.touches[0].clientX)) }, { passive: true })
-  window.addEventListener('touchmove',  (e) => { if (dragging) apply(getPos(e.touches[0].clientX)) },   { passive: true })
-  window.addEventListener('touchend',   ()  => { dragging = false })
+  slider.addEventListener('mousedown', (e) => {
+    if (!canStart(e)) return
+    dragging = true; apply(getPos(e.clientX)); e.preventDefault()
+  })
+  window.addEventListener('mousemove', (e) => { if (dragging) apply(getPos(e.clientX)) })
+  window.addEventListener('mouseup',   ()  => { dragging = false })
+
+  slider.addEventListener('touchstart', (e) => {
+    if (!canStart(e)) { if (e.touches.length > 1) dragging = false; return }
+    dragging = true; apply(getPos(e.touches[0].clientX))
+  }, { passive: true })
+  window.addEventListener('touchmove', (e) => {
+    if (dragging && e.touches.length === 1) apply(getPos(e.touches[0].clientX))
+  }, { passive: true })
+  window.addEventListener('touchend', () => { dragging = false })
 }
 
 function initCompareSliders() {
-  document.querySelectorAll('.work-item .compare-slider').forEach(setupCompare)
+  document.querySelectorAll('.work-item .compare-slider').forEach(s => setupCompare(s))
 }
 
 // ================================================
-// LIGHTBOX — AMPLIAR ANTES / DESPUÉS
+// LIGHTBOX — AMPLIAR ANTES / DESPUÉS (con zoom)
 // ================================================
+const lb = { scale: 1, tx: 0, ty: 0, MAX: 6 }
+
 function injectLightboxStyles() {
   if (document.getElementById('lightboxStyles')) return
   const style = document.createElement('style')
   style.id = 'lightboxStyles'
   style.textContent = `
+    /* Arreglo: las etiquetas tenían top y bottom a la vez y se estiraban */
+    .compare-slider .compare-tag { bottom: auto; }
+
     /* Botón ampliar sobre cada comparador */
     .compare-zoom {
       position: absolute;
@@ -631,7 +647,7 @@ function injectLightboxStyles() {
       z-index: 100000;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      gap: 14px;
+      gap: 12px;
       padding: 16px;
       animation: lbFade 0.2s ease;
     }
@@ -661,7 +677,7 @@ function injectLightboxStyles() {
 
     .lb-slider {
       position: relative;
-      width: min(96vw, calc(78vh * 4 / 3), 1200px);
+      width: min(96vw, calc(70vh * 4 / 3), 1200px);
       aspect-ratio: 4 / 3;
       overflow: hidden;
       border-radius: 12px;
@@ -670,18 +686,183 @@ function injectLightboxStyles() {
       user-select: none;
       touch-action: none;
     }
+    /* Cada capa es opaca: si una foto tiene otra proporción, no se transparenta la otra */
+    .lb-slider .compare-before,
+    .lb-slider .compare-after { background: #111; }
     .lb-slider .compare-before img,
-    .lb-slider .compare-after img { object-fit: contain; }
+    .lb-slider .compare-after img {
+      object-fit: contain;
+      transform-origin: center center;
+      will-change: transform;
+    }
+    .lb-slider.zoomed { cursor: grab; }
+    .lb-slider.zoomed:active { cursor: grabbing; }
+    /* El círculo del divisor se puede agarrar siempre (también con zoom) */
+    .lb-slider .compare-circle { pointer-events: auto; cursor: col-resize; }
+
+    .lb-controls {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .lb-controls button {
+      min-width: 40px; height: 40px;
+      padding: 0 14px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      font-size: 1.2rem; font-weight: 700;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+    .lb-controls button:hover { background: #c9a84c; color: #0f1f3d; }
+    .lb-controls #lbZoomReset { font-size: 0.8rem; }
+    .lb-controls span {
+      color: #fff; font-size: 0.85rem; font-weight: 700;
+      min-width: 52px; text-align: center;
+    }
 
     .lb-hint {
-      color: rgba(255,255,255,0.55);
+      color: rgba(255,255,255,0.6);
       font-size: 0.8rem;
       text-align: center;
+      padding: 0 12px;
     }
   `
   document.head.appendChild(style)
 }
 
+// ---------- zoom ----------
+function lbClamp() {
+  const slider = document.getElementById('lbSlider')
+  const maxX = (lb.scale - 1) * slider.clientWidth  / 2
+  const maxY = (lb.scale - 1) * slider.clientHeight / 2
+  lb.tx = Math.min(Math.max(lb.tx, -maxX), maxX)
+  lb.ty = Math.min(Math.max(lb.ty, -maxY), maxY)
+  if (lb.scale === 1) { lb.tx = 0; lb.ty = 0 }
+}
+
+function lbApplyTransform() {
+  const slider = document.getElementById('lbSlider')
+  if (!slider) return
+  const t = lb.scale === 1 ? '' : `translate(${lb.tx}px, ${lb.ty}px) scale(${lb.scale})`
+  document.getElementById('lbBefore').style.transform = t
+  document.getElementById('lbAfter').style.transform  = t
+  slider.classList.toggle('zoomed', lb.scale > 1)
+  const label = document.getElementById('lbZoomLevel')
+  if (label) label.textContent = `${Math.round(lb.scale * 100)}%`
+  const hint = document.getElementById('lbHint')
+  if (hint) hint.textContent = lb.scale > 1
+    ? 'Arrastrá para mover la foto · Agarrá el círculo para mover el divisor'
+    : 'Deslizá para comparar · Rueda del mouse, pellizco o doble toque para hacer zoom'
+}
+
+// Zoom manteniendo fijo el punto (cx, cy) de la pantalla
+function lbZoomAt(cx, cy, newScale) {
+  const slider = document.getElementById('lbSlider')
+  const rect   = slider.getBoundingClientRect()
+  newScale = Math.min(Math.max(newScale, 1), lb.MAX)
+  const px = cx - rect.left - rect.width  / 2
+  const py = cy - rect.top  - rect.height / 2
+  const ratio = newScale / lb.scale
+  lb.tx = px - (px - lb.tx) * ratio
+  lb.ty = py - (py - lb.ty) * ratio
+  lb.scale = newScale
+  lbClamp()
+  lbApplyTransform()
+}
+
+function lbZoomCenter(factor) {
+  const rect = document.getElementById('lbSlider').getBoundingClientRect()
+  lbZoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, lb.scale * factor)
+}
+
+function lbReset() {
+  lb.scale = 1; lb.tx = 0; lb.ty = 0
+  lbApplyTransform()
+}
+
+function lbToggleZoom(x, y) {
+  if (lb.scale > 1) lbReset()
+  else lbZoomAt(x, y, 2.5)
+}
+
+function initLightboxZoom(slider) {
+  let lastTouchAt = 0 // para no contar dos veces el doble toque (toque + dblclick del navegador)
+
+  // Rueda del mouse
+  slider.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    lbZoomAt(e.clientX, e.clientY, lb.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15))
+  }, { passive: false })
+
+  // Doble clic (mouse)
+  slider.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.compare-circle')) return
+    if (Date.now() - lastTouchAt < 600) return
+    lbToggleZoom(e.clientX, e.clientY)
+  })
+
+  // Arrastrar para mover la foto, pellizcar y doble toque
+  const pointers = new Map()
+  let lastDist = 0, lastMid = null, moved = false
+  let lastTap = { t: 0, x: 0, y: 0 }
+
+  slider.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.compare-circle')) return
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    slider.setPointerCapture(e.pointerId)
+    moved = false
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()]
+      lastDist = Math.hypot(a.x - b.x, a.y - b.y)
+      lastMid  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+    }
+  })
+
+  slider.addEventListener('pointermove', (e) => {
+    const p = pointers.get(e.pointerId)
+    if (!p) return
+    const dx = e.clientX - p.x, dy = e.clientY - p.y
+    p.x = e.clientX; p.y = e.clientY
+    if (Math.abs(dx) + Math.abs(dy) > 2) moved = true
+
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()]
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      const mid  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      if (lastDist) lbZoomAt(mid.x, mid.y, lb.scale * dist / lastDist)
+      if (lastMid) {
+        lb.tx += mid.x - lastMid.x
+        lb.ty += mid.y - lastMid.y
+        lbClamp(); lbApplyTransform()
+      }
+      lastDist = dist; lastMid = mid; moved = true
+    } else if (pointers.size === 1 && lb.scale > 1) {
+      lb.tx += dx; lb.ty += dy
+      lbClamp(); lbApplyTransform()
+    }
+  })
+
+  const endPointer = (e) => {
+    if (!pointers.has(e.pointerId)) return
+    pointers.delete(e.pointerId)
+    lastDist = 0; lastMid = null
+    if (e.pointerType === 'touch') lastTouchAt = Date.now()
+    // doble toque en pantallas táctiles
+    if (e.type === 'pointerup' && e.pointerType === 'touch' && !moved && pointers.size === 0) {
+      const now = Date.now()
+      if (now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+        lbToggleZoom(e.clientX, e.clientY)
+        lastTap.t = 0
+      } else {
+        lastTap = { t: now, x: e.clientX, y: e.clientY }
+      }
+    }
+  }
+  slider.addEventListener('pointerup',     endPointer)
+  slider.addEventListener('pointercancel', endPointer)
+}
+
+// ---------- armado del lightbox ----------
 function buildLightbox() {
   let box = document.getElementById('lightbox')
   if (box) return box
@@ -713,7 +894,13 @@ function buildLightbox() {
         <div class="compare-line"></div>
       </div>
     </div>
-    <div class="lb-hint">Deslizá para comparar · Tocá afuera o presioná Esc para cerrar</div>
+    <div class="lb-controls">
+      <button type="button" id="lbZoomOut"   aria-label="Alejar">−</button>
+      <span id="lbZoomLevel">100%</span>
+      <button type="button" id="lbZoomIn"    aria-label="Acercar">+</button>
+      <button type="button" id="lbZoomReset" aria-label="Restablecer zoom">Restablecer</button>
+    </div>
+    <div class="lb-hint" id="lbHint"></div>
   `
   document.body.appendChild(box)
 
@@ -724,7 +911,23 @@ function buildLightbox() {
     if (e.key === 'Escape') closeLightbox()
   })
 
-  setupCompare(document.getElementById('lbSlider'))
+  const slider = document.getElementById('lbSlider')
+
+  // El divisor se mueve arrastrando en cualquier lado si no hay zoom;
+  // con zoom, arrastrar mueve la foto y el divisor se agarra desde el círculo.
+  setupCompare(slider, {
+    canStart: (e) => {
+      if (e.touches && e.touches.length > 1) return false
+      if (lb.scale <= 1) return true
+      return !!e.target.closest('.compare-circle')
+    }
+  })
+  initLightboxZoom(slider)
+
+  document.getElementById('lbZoomIn').addEventListener('click',    () => lbZoomCenter(1.4))
+  document.getElementById('lbZoomOut').addEventListener('click',   () => lbZoomCenter(1 / 1.4))
+  document.getElementById('lbZoomReset').addEventListener('click', lbReset)
+
   return box
 }
 
@@ -735,6 +938,7 @@ function openLightbox(work) {
   document.getElementById('lbAfter').src  = work.after
   box.classList.remove('hidden')
   document.body.style.overflow = 'hidden'
+  lbReset()
   const slider = document.getElementById('lbSlider')
   if (slider && slider._apply) slider._apply(50)
 }
@@ -744,4 +948,5 @@ function closeLightbox() {
   if (!box || box.classList.contains('hidden')) return
   box.classList.add('hidden')
   document.body.style.overflow = ''
+  lbReset()
 }
