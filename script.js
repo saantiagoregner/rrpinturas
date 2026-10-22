@@ -551,20 +551,29 @@ function makeWorkTitlesEditable() {
 
 // ================================================
 // COMPARE SLIDER
+// ANTES a la izquierda · DESPUÉS a la derecha
 // ================================================
 function initCompareSliders() {
   document.querySelectorAll('.compare-slider').forEach(slider => {
-    const afterEl = slider.querySelector('.compare-after')
-    const handle  = slider.querySelector('.compare-handle')
-    let dragging  = false
+    const beforeEl = slider.querySelector('.compare-before')
+    const afterEl  = slider.querySelector('.compare-after')
+    const handle   = slider.querySelector('.compare-handle')
+    let dragging   = false
+
+    // El DESPUÉS queda de fondo completo (se ve a la derecha del divisor)
+    afterEl.style.zIndex   = '1'
+    afterEl.style.clipPath = 'none'
+
+    // El ANTES va arriba y se recorta (se ve a la izquierda del divisor)
+    beforeEl.style.zIndex  = '2'
 
     const getPos = (x) => {
       const rect = slider.getBoundingClientRect()
       return Math.min(Math.max(((x - rect.left) / rect.width) * 100, 2), 98)
     }
     const apply = (pct) => {
-      afterEl.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
-      handle.style.left      = `${pct}%`
+      beforeEl.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
+      handle.style.left       = `${pct}%`
     }
 
     apply(50)
